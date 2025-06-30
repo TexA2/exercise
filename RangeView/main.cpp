@@ -6,6 +6,12 @@
 #include <pcl/point_cloud.h>
 
 
+#include <pcl/visualization/pcl_visualizer.h> 
+#include <pcl/visualization/cloud_viewer.h>
+
+
+void createDepthMap(const pcl::PointCloud<pcl::PointXYZI>::Ptr& cloud);
+
 // Параметры Range Image
 struct RangeImageParams {
     float fov_up = 15.0f;    // Верхний угол обзора (град)
@@ -41,7 +47,7 @@ void convertToRangeViewAndSave(
     // Заполняем Range Image
     for (const auto& point : input_cloud->points) {
         float range = sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
-        //if (range > params.max_range) continue;  // можно как включить так и выключыить посмотреть где лучше
+        if (range > params.max_range) continue;  // можно как включить так и выключыить посмотреть где лучше
 
         float yaw = atan2(point.y, point.x);    // Азимут [-π, π]
         float pitch = asin(point.z / range);    // Элевация [-π/2, π/2]
@@ -80,35 +86,95 @@ void convertToRangeViewAndSave(
                 point.y = v;  // Координата v (высота)
                 point.z = range_image[v][u];  // Дальность
                 point.intensity = intensity_image[v][u];
-
-
-                // просто разукрасил нужное мне облако этот треш удалить и раскоменить строчку выше
-                // добавить карту глубины
-                // if (point.z < 31)
-                // point.intensity = 1;
-                // else
-                //                 if (point.z > 31 &&  point.z < 62)
-                // point.intensity = 7;
-                // else
-                //                 if (point.z > 62 &&  point.z < 93)
-                // point.intensity = 10;
-                // else
-                //                 if (point.z > 93 &&  point.z < 124)
-                // point.intensity = 15;
-                // else
-                //                 if (point.z > 124)
-                // point.intensity = 20;
-
-
                 range_cloud->push_back(point);
             }
         }
     }
 
+    createDepthMap(range_cloud);
     // Сохраняем в PCD
     pcl::io::savePCDFileASCII(output_pcd_path, *range_cloud);
     std::cout << "Range View saved to " << output_pcd_path << std::endl;
 }
+
+// Функция для создания цветной карты глубины
+void createDepthMap(const pcl::PointCloud<pcl::PointXYZI>::Ptr& cloud)
+{
+
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
+
+    colored_cloud->width = cloud->width;
+    colored_cloud->height = cloud->height;
+    colored_cloud->resize(cloud->size());
+
+    // Находим минимальное и максимальное расстояние
+    float min_depth = std::numeric_limits<float>::max();
+    float max_depth = -std::numeric_limits<float>::max();
+    
+    for (const auto& point : cloud->points) {
+        float depth = sqrt(point.x*point.x + point.y*point.y + point.z*point.z);
+        if (depth < min_depth) min_depth = depth;
+        if (depth > max_depth) max_depth = depth;
+    }
+
+
+
+    // Найдем min и max по Z для нормализации
+    float z_min = std::numeric_limits<float>::max();
+    float z_max = std::numeric_limits<float>::lowest();
+
+    for (const auto& pt : cloud->points)
+    {
+        if (pt.z < z_min) z_min = pt.z;
+        if (pt.z > z_max) z_max = pt.z;
+    }
+
+    float z_range = z_max - z_min;
+
+    if (z_range == 0) z_range = 1.0f; // защита от деления на 0
+
+    // Функция для интерполяции цвета (синий -> красный)
+    auto depthToRGB = [](float depth_norm) -> std::tuple<uint8_t, uint8_t, uint8_t> {
+        // depth_norm от 0 до 1
+        // Синий (близко) RGB(0,0,255)
+        // Красный (далеко) RGB(255,0,0)
+        uint8_t r = 0;
+        uint8_t g = static_cast<uint8_t>(depth_norm * 255);;
+        uint8_t b = static_cast<uint8_t>((1.0f - depth_norm) * 255);
+        return std::make_tuple(r, g, b);
+    };
+
+    // Преобразуем точки
+    for (size_t i = 0; i < cloud->points.size(); ++i)
+    {
+        const auto& pt_in = cloud->points[i];
+        auto& pt_out = colored_cloud->points[i];
+
+        pt_out.x = pt_in.x;
+        pt_out.y = pt_in.y;
+        pt_out.z = pt_in.z;
+
+        float depth_norm = (pt_in.z - z_min) / z_range;
+        auto [r, g, b] = depthToRGB(depth_norm);
+
+        pt_out.r = r;
+        pt_out.g = g;
+        pt_out.b = b;
+    }
+
+
+
+// сохранение 
+    std::string output_pcd_path = "colored_cloud.pcd";
+
+    pcl::io::savePCDFileASCII(output_pcd_path, *colored_cloud);
+    std::cout << "Range View saved to " << output_pcd_path << std::endl;
+}
+
+
+
+
+
 
 int main() {
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
@@ -157,7 +223,7 @@ int main() {
     // Параметры Range Image (настрой под свой лидар)
     RangeImageParams params;
     params.width = 1024;
-    params.height = 64;
+    params.height = 128;
     params.fov_down = fov_down_rad * 180.0f / M_PI;
     params.fov_up = fov_up_rad * 180.0f / M_PI;
     params.max_range = max_range * 1.1f; // +10% запаса
